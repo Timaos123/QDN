@@ -87,7 +87,7 @@ class Learner:
 
     def getInfo(self):
         return self.state
-
+ 
 if __name__=="__main__":
     
     myLearner=Learner()
