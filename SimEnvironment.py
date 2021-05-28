@@ -6,7 +6,9 @@ class SimEnvironment:
         pass
 
     def giveRandomVal(self,iter):
-        return random.random()*(-2*(iter%10)**2+20*(iter%10)+random.random())
+        # randomV=round(random.random()*(-1/5*(iter%10)**2+2*(iter%10)),2)
+        randomV=round(-1/5*(iter%10)**2+2*(iter%10)+1000,2)
+        return randomV
 
 if __name__=="__main__":
     mySimEnv=SimEnvironment()
