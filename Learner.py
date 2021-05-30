@@ -10,29 +10,44 @@ from sklearn.metrics import f1_score
 import os
 class prModel:
 
-    def __init__(self,T,decisionType=[-1,0,1],summary=False):
+    def __init__(self,T,decisionType=[-1,0,1],summary=False,reloadModel=False):
         self.T=T
         self.decisionType=decisionType
-        self.buildModel(summary=summary)
+        self.buildModel(summary=summary,reloadModel=reloadModel)
+        self.oldF1=0
 
     def buildModel(self,summary=True,reloadModel=True):
         priceInputLayer=tf.keras.layers.Input(shape=[self.T,],name="price_input")
         priceReshapeLayer=tf.keras.layers.Reshape([self.T,1,])(priceInputLayer)
-        priceOutputLayer=tf.keras.layers.GRU(1,activation="tanh",return_sequences=True,name="price_output_lstm")(priceReshapeLayer)
+        batchNomLayer = tf.keras.layers.BatchNormalization()(priceReshapeLayer)
+        priceOutputLayer = tf.keras.layers.GRU(
+            64, activation="tanh", return_sequences=True)(batchNomLayer)
+        priceOutputLayer = tf.keras.layers.GRU(
+            32, activation="linear", return_sequences=True)(priceOutputLayer)
+        priceOutputLayer = tf.keras.layers.GRU(
+            1, activation="tanh", return_sequences=True, name="price_output_lstm")(priceOutputLayer)
 
         decisionInputLayer=tf.keras.layers.Input(shape=[self.T,],name="decision_input")
         decisionReshapeLayer=tf.keras.layers.Reshape([self.T,1,])(decisionInputLayer)
 
         statusInputLayer=tf.keras.layers.Input(shape=[self.T,],name="status_input")
-        statusReshapeLayer=tf.keras.layers.Reshape([self.T,1,])(statusInputLayer)
+        statusReshapeLayer = tf.keras.layers.Reshape(
+            [self.T, 1, ])(statusInputLayer)
+        batchNomLayer = tf.keras.layers.BatchNormalization()(statusReshapeLayer)
 
-        concatLayer=tf.keras.layers.Concatenate(name="price_decision_concat",axis=-1)([decisionReshapeLayer,priceOutputLayer,statusReshapeLayer])
-        statusOutputLayer=tf.keras.layers.GRU(1,activation="softmax",name="status_output")(concatLayer)
+        concatLayer = tf.keras.layers.Concatenate(
+            name="price_decision_concat", axis=-1)([decisionReshapeLayer, priceOutputLayer, batchNomLayer])
+        statusOutputLayer = tf.keras.layers.GRU(
+            32, activation="relu", return_sequences=True)(concatLayer)
+        statusOutputLayer = tf.keras.layers.GRU(
+            64, activation="relu", return_sequences=True)(statusOutputLayer)
+        statusOutputLayer = tf.keras.layers.GRU(
+            1, activation="softmax", name="status_output")(statusOutputLayer)
 
         self.model=tf.keras.Model(inputs=[priceInputLayer,decisionInputLayer,statusInputLayer],outputs=[priceOutputLayer,statusOutputLayer])
         self.model.compile(optimizer=tf.keras.optimizers.RMSprop(lr=0.001),
                              loss={'price_output_lstm':'mse',
-                                    'status_output':'categorical_crossentropy'})
+                                   'status_output': 'binary_crossentropy'})
         if reloadModel==True:
             self.model.load_weights("model/rlModel/RLModel")
         if summary==True:
@@ -48,28 +63,36 @@ class prModel:
         statusY=y[1][self.T:]
         statusY=(np.array(statusY)>0).astype(int)
 
-        trainPriceX=random.sample(priceX.tolist(),int(priceX.shape[0]*(1-testSize)))
-        trainDecisionX=random.sample(decisionX.tolist(),int(decisionX.shape[0]*(1-testSize)))
-        trainStatusX=random.sample(statusX.tolist(),int(statusX.shape[0]*(1-testSize)))
-        trainPriceY=random.sample(priceY.tolist(),int(priceY.shape[0]*(1-testSize)))
-        trainStatusY=random.sample(statusY.tolist(),int(statusY.shape[0]*(1-testSize)))
+        trainIndexList = random.sample(
+            list(range(len(priceX.tolist()))), int(priceX.shape[0]*(1-testSize)))
+        testIndexList = random.sample(
+            list(range(len(priceX.tolist()))), int(priceX.shape[0]*testSize))
+
+        trainPriceX=priceX[trainIndexList]
+        trainDecisionX=decisionX[trainIndexList]
+        trainStatusX=statusX[trainIndexList]
+        trainPriceY=priceY[trainIndexList]
+        trainStatusY=statusY[trainIndexList]
         
-        testPriceX=random.sample(priceX.tolist(),int(priceX.shape[0]*testSize))
-        testDecisionX=random.sample(decisionX.tolist(),int(decisionX.shape[0]*testSize))
-        testStatusX=random.sample(statusX.tolist(),int(statusX.shape[0]*testSize))
-        testPriceY=random.sample(priceY.tolist(),int(priceY.shape[0]*testSize))
-        testStatusY=random.sample(statusY.tolist(),int(statusY.shape[0]*testSize))
+        testPriceX = priceX[testIndexList]
+        testDecisionX=decisionX[testIndexList]
+        testStatusX=statusX[testIndexList]
+        testPriceY=priceY[testIndexList]
+        testStatusY=statusY[testIndexList]
 
-        self.model.fit([np.array(trainPriceX),np.array(trainDecisionX),np.array(trainStatusX)],[np.array(trainPriceY),np.array(trainStatusY)],epochs=epochs)
+        es=tf.keras.callbacks.EarlyStopping(mode="auto",monitor="loss",patience=5)
+        self.model.fit([np.array(trainPriceX), np.array(trainDecisionX), np.array(trainStatusX)], [
+                       np.array(trainPriceY), np.array(trainStatusY)], epochs=epochs, callbacks=[es])
         prePriceY,preStatusY=self.model.predict([np.array(testPriceX),np.array(testDecisionX),np.array(testStatusX)])
-        preStatusY=(preStatusY>0).astype(int).reshape([-1,1])
+        preStatusY=(preStatusY>0.5).astype(int).reshape([1,-1])[0]
 
-        f1=f1_score(testStatusY,preStatusY,labels=1)
-
-        if f1>0.6:
+        f1=f1_score(testStatusY,preStatusY,average="macro")
+        print("f1-score",f1)
+        if f1>self.oldF1:
             if "rlModel" not in os.listdir("model"):
                 os.mkdir("model/rlModel")
             self.model.save_weights("model/rlModel/RLModel")
+            self.oldF1=f1
 
         return max(f1-0.1,0.1)
 
@@ -84,7 +107,8 @@ class prModel:
         for decisionTypeItem in self.decisionType:
             tmpDecisionX=copy.deepcopy(decisionX)
             tmpDecisionX[0].append(decisionTypeItem)
-            newPrice,newStatus=self.model.predict([np.array(priceX),np.array(tmpDecisionX),np.array(statusX)])
+            newPrice, newStatus = self.model.predict(
+                [np.array(priceX), np.array(tmpDecisionX), (np.array(statusX) > 0).astype(int)])
             statusList.append(newStatus[0][0])
         
         # statusList=[random.sample([1,2,3],3)]
@@ -108,15 +132,20 @@ class Learner:
             "direction":0,
             "capital":1
         }
+        self.oldCapital=1
         self.strategyList=[self.goUp,self.closeUp,self.observe,self.goDown,self.closeDown]
         self.freeDegree=1
 
     def fitModel(self):
         self.historicalDecisionList.append(self.status["direction"])
         self.historicalStatusList.append(self.status["direction"])
+        self.meanPrice = np.mean(self.historicalPriceList)
+        self.stdPrice = np.std(self.historicalPriceList)
+        regPriceList = (np.array(self.historicalPriceList)-self.meanPrice)/self.stdPrice
         self.freeDegree=1-self.rlModel.fit(
-            [self.historicalPriceList[:-1],self.historicalDecisionList[:-1],self.historicalStatusList[:-1]], 
-            [self.historicalPriceList[1:],self.historicalStatusList[1:]])
+            [regPriceList[:-1], self.historicalDecisionList[:-1],
+                self.historicalStatusList[:-1]],
+            [regPriceList[1:], self.historicalStatusList[1:]],epochs=200)
         self.historicalDecisionList=self.historicalDecisionList[:-1]
         self.historicalStatusList=self.historicalStatusList[:-1]
 
@@ -136,8 +165,13 @@ class Learner:
         return strategyI
 
     def doStrategy(self,newPriceList):
-
-        x=[newPriceList[-self.inputT:],self.historicalDecisionList[-self.inputT+1:],self.historicalStatusList[-self.inputT:]]
+        if "meanPrice" not in dir(self):
+            self.meanPrice = np.array(newPriceList).mean()
+            self.stdPrice = np.array(newPriceList).std()
+        regPriceList = (np.array(newPriceList) -
+                        self.meanPrice)/self.stdPrice
+        x = [regPriceList[-self.inputT:], self.historicalDecisionList[-self.inputT+1:],
+             self.historicalStatusList[-self.inputT:]]
         if random.random()<self.freeDegree:
             statusPList=random.sample([1,2,3],3)
         else:
@@ -218,14 +252,15 @@ class Learner:
                 0 for priceI in range(len(self.historicalPriceList)-1)]
         self.historicalPriceList.append(newPriceList[-1])
         self.historicalDecisionList.append(self.status["direction"])# 永远是上一轮的决策
-        self.historicalStatusList.append(self.status["capital"]-1)# 永远是上一轮的收益
+        self.historicalStatusList.append((self.status["capital"]-self.oldCapital)/self.oldCapital)# 永远是上一轮的收益
+        self.oldCapital = self.status["capital"]
             
     def getInfo(self):
         return self.status
  
 if __name__=="__main__":
     
-    T=5
+    T=10
     myLearner=Learner(T,summary=True)
     mySE=SimEnvironment()
     waitToFit=False
@@ -233,7 +268,8 @@ if __name__=="__main__":
     totalStatusList=[]
     pList=[]
     newPriceList=[]
-    for i in range(1000):
+    i=0
+    while True:
         newPriceList.append(mySE.giveRandomVal(i))
         if len(newPriceList) >=T:
             strategyStr=myLearner.doStrategy(newPriceList)
@@ -251,10 +287,11 @@ if __name__=="__main__":
             newPriceList = newPriceList[1:]
         else:
             myLearner.observe(newPriceList)
-        if i>0 and i%20==0:
+        if i>0 and i%200==0:
             waitToFit=True
         if waitToFit==True and (myLearner.status["direction"]==0 or random.random()>0.8):
             myLearner.fitModel()
             waitToFit=False
-        time.sleep(0.5)
+        time.sleep(0.1)
+        i+=1
     print(totalStatusList)
