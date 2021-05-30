@@ -24,8 +24,8 @@ class prModel:
             64, activation="tanh", return_sequences=True)(batchNomLayer)
         priceOutputLayer = tf.keras.layers.GRU(
             32, activation="linear", return_sequences=True)(priceOutputLayer)
-        priceOutputLayer = tf.keras.layers.GRU(
-            1, activation="tanh", return_sequences=True, name="price_output_lstm")(priceOutputLayer)
+        finalPriceOutputLayer = tf.keras.layers.GRU(
+            1, activation="tanh", return_sequences=False, name="price_output_lstm")(priceOutputLayer)
 
         decisionInputLayer=tf.keras.layers.Input(shape=[self.T,],name="decision_input")
         decisionReshapeLayer=tf.keras.layers.Reshape([self.T,1,])(decisionInputLayer)
@@ -33,10 +33,10 @@ class prModel:
         statusInputLayer=tf.keras.layers.Input(shape=[self.T,],name="status_input")
         statusReshapeLayer = tf.keras.layers.Reshape(
             [self.T, 1, ])(statusInputLayer)
-        batchNomLayer = tf.keras.layers.BatchNormalization()(statusReshapeLayer)
+        statusBatchNomLayer = tf.keras.layers.BatchNormalization()(statusReshapeLayer)
 
         concatLayer = tf.keras.layers.Concatenate(
-            name="price_decision_concat", axis=-1)([decisionReshapeLayer, priceOutputLayer, batchNomLayer])
+            name="price_decision_concat", axis=-1)([decisionReshapeLayer, priceOutputLayer, statusBatchNomLayer])
         statusOutputLayer = tf.keras.layers.GRU(
             32, activation="relu", return_sequences=True)(concatLayer)
         statusOutputLayer = tf.keras.layers.GRU(
@@ -44,7 +44,7 @@ class prModel:
         statusOutputLayer = tf.keras.layers.GRU(
             1, activation="softmax", name="status_output")(statusOutputLayer)
 
-        self.model=tf.keras.Model(inputs=[priceInputLayer,decisionInputLayer,statusInputLayer],outputs=[priceOutputLayer,statusOutputLayer])
+        self.model=tf.keras.Model(inputs=[priceInputLayer,decisionInputLayer,statusInputLayer],outputs=[finalPriceOutputLayer,statusOutputLayer])
         self.model.compile(optimizer=tf.keras.optimizers.RMSprop(lr=0.001),
                              loss={'price_output_lstm':'mse',
                                    'status_output': 'binary_crossentropy'})
@@ -59,7 +59,7 @@ class prModel:
         decisionX=np.array([x[1][i:i+self.T] for i in range(len(x[1])-self.T)])
         statusX=np.array([x[2][i:i+self.T] for i in range(len(x[1])-self.T)])
 
-        priceY=np.array([y[0][i:i+self.T] for i in range(len(y[0])-self.T)])
+        priceY=np.array(y[0][self.T:])
         statusY=y[1][self.T:]
         statusY=(np.array(statusY)>0).astype(int)
 
@@ -260,7 +260,7 @@ class Learner:
  
 if __name__=="__main__":
     
-    T=10
+    T=5
     myLearner=Learner(T,summary=True)
     mySE=SimEnvironment()
     waitToFit=False
