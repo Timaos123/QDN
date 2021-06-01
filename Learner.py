@@ -8,121 +8,16 @@ import tqdm
 import copy
 from sklearn.metrics import f1_score
 import os
-class prModel:
-
-    def __init__(self,T,decisionType=[-1,0,1],summary=False,reloadModel=False):
-        self.T=T
-        self.decisionType=decisionType
-        self.buildModel(summary=summary,reloadModel=reloadModel)
-        self.oldF1=0
-
-    def buildModel(self,summary=True,reloadModel=True):
-        priceInputLayer=tf.keras.layers.Input(shape=[self.T,],name="price_input")
-        priceReshapeLayer=tf.keras.layers.Reshape([self.T,1,])(priceInputLayer)
-        batchNomLayer = tf.keras.layers.BatchNormalization()(priceReshapeLayer)
-        priceOutputLayer = tf.keras.layers.GRU(
-            64, activation="tanh", return_sequences=True)(batchNomLayer)
-        priceOutputLayer = tf.keras.layers.GRU(
-            32, activation="linear", return_sequences=True)(priceOutputLayer)
-        finalPriceOutputLayer = tf.keras.layers.GRU(
-            1, activation="tanh", return_sequences=False, name="price_output_lstm")(priceOutputLayer)
-
-        decisionInputLayer=tf.keras.layers.Input(shape=[self.T,],name="decision_input")
-        decisionReshapeLayer=tf.keras.layers.Reshape([self.T,1,])(decisionInputLayer)
-
-        statusInputLayer=tf.keras.layers.Input(shape=[self.T,],name="status_input")
-        statusReshapeLayer = tf.keras.layers.Reshape(
-            [self.T, 1, ])(statusInputLayer)
-        statusBatchNomLayer = tf.keras.layers.BatchNormalization()(statusReshapeLayer)
-
-        concatLayer = tf.keras.layers.Concatenate(
-            name="price_decision_concat", axis=-1)([decisionReshapeLayer, priceOutputLayer, statusBatchNomLayer])
-        statusOutputLayer = tf.keras.layers.GRU(
-            32, activation="relu", return_sequences=True)(concatLayer)
-        statusOutputLayer = tf.keras.layers.GRU(
-            64, activation="relu", return_sequences=True)(statusOutputLayer)
-        statusOutputLayer = tf.keras.layers.GRU(
-            1, activation="softmax", name="status_output")(statusOutputLayer)
-
-        self.model=tf.keras.Model(inputs=[priceInputLayer,decisionInputLayer,statusInputLayer],outputs=[finalPriceOutputLayer,statusOutputLayer])
-        self.model.compile(optimizer=tf.keras.optimizers.RMSprop(lr=0.001),
-                             loss={'price_output_lstm':'mse',
-                                   'status_output': 'binary_crossentropy'})
-        if reloadModel==True:
-            self.model.load_weights("model/rlModel/RLModel")
-        if summary==True:
-            self.model.summary()
-
-    def fit(self,x,y,testSize=0.2,epochs=15):
-        
-        priceX=np.array([x[0][i:i+self.T] for i in range(len(x[0])-self.T)])
-        decisionX=np.array([x[1][i:i+self.T] for i in range(len(x[1])-self.T)])
-        statusX=np.array([x[2][i:i+self.T] for i in range(len(x[1])-self.T)])
-
-        priceY=np.array(y[0][self.T:])
-        statusY=y[1][self.T:]
-        statusY=(np.array(statusY)>0).astype(int)
-
-        trainIndexList = random.sample(
-            list(range(len(priceX.tolist()))), int(priceX.shape[0]*(1-testSize)))
-        testIndexList = random.sample(
-            list(range(len(priceX.tolist()))), int(priceX.shape[0]*testSize))
-
-        trainPriceX=priceX[trainIndexList]
-        trainDecisionX=decisionX[trainIndexList]
-        trainStatusX=statusX[trainIndexList]
-        trainPriceY=priceY[trainIndexList]
-        trainStatusY=statusY[trainIndexList]
-        
-        testPriceX = priceX[testIndexList]
-        testDecisionX=decisionX[testIndexList]
-        testStatusX=statusX[testIndexList]
-        testPriceY=priceY[testIndexList]
-        testStatusY=statusY[testIndexList]
-
-        es=tf.keras.callbacks.EarlyStopping(mode="auto",monitor="loss",patience=5)
-        self.model.fit([np.array(trainPriceX), np.array(trainDecisionX), np.array(trainStatusX)], [
-                       np.array(trainPriceY), np.array(trainStatusY)], epochs=epochs, callbacks=[es])
-        prePriceY,preStatusY=self.model.predict([np.array(testPriceX),np.array(testDecisionX),np.array(testStatusX)])
-        preStatusY=(preStatusY>0.5).astype(int).reshape([1,-1])[0]
-
-        f1=f1_score(testStatusY,preStatusY,average="macro")
-        print("f1-score",f1)
-        if f1>self.oldF1:
-            if "rlModel" not in os.listdir("model"):
-                os.mkdir("model/rlModel")
-            self.model.save_weights("model/rlModel/RLModel")
-            self.oldF1=f1
-
-        return max(f1-0.1,0.1)
-
-
-    def predict(self,x):
-
-        priceX=[x[0]]
-        decisionX=[x[1]]
-        statusX=[x[2]]
-        
-        statusList=[]
-        for decisionTypeItem in self.decisionType:
-            tmpDecisionX=copy.deepcopy(decisionX)
-            tmpDecisionX[0].append(decisionTypeItem)
-            newPrice, newStatus = self.model.predict(
-                [np.array(priceX), np.array(tmpDecisionX), (np.array(statusX) > 0).astype(int)])
-            statusList.append(newStatus[0][0])
-        
-        # statusList=[random.sample([1,2,3],3)]
-
-        return statusList
+from PrModel import PrModel
 
 class Learner:
 
-    def __init__(self,T,summary=True):
+    def __init__(self,T,dim=5,summary=True):
         
         self.inputT=T
         
         self.QTable={}
-        self.rlModel=prModel(T,summary=summary)
+        self.rlModel = PrModel(T, dim=dim, summary=summary)
         self.tmpHistoricalPriceList = []
         self.historicalPriceList = []
         self.historicalDecisionList = []
@@ -168,8 +63,7 @@ class Learner:
         if "meanPrice" not in dir(self):
             self.meanPrice = np.array(newPriceList).mean()
             self.stdPrice = np.array(newPriceList).std()
-        regPriceList = (np.array(newPriceList) -
-                        self.meanPrice)/self.stdPrice
+        regPriceList = (np.array(newPriceList) -self.meanPrice)/self.stdPrice
         x = [regPriceList[-self.inputT:], self.historicalDecisionList[-self.inputT+1:],
              self.historicalStatusList[-self.inputT:]]
         if random.random()<self.freeDegree:
@@ -261,8 +155,9 @@ class Learner:
 if __name__=="__main__":
     
     T=5
-    myLearner=Learner(T,summary=True)
-    mySE=SimEnvironment()
+    dim=5
+    myLearner = Learner(T, summary=True, dim=dim)
+    mySE = SimEnvironment(dim=dim)
     waitToFit=False
 
     totalStatusList=[]
