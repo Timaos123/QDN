@@ -81,15 +81,6 @@ class PrModel:
         actorLstmLayer2 = tf.keras.layers.LSTM(64, activation="tanh")(inputLayer)
         actorOutputLayer2 = tf.keras.layers.Dense(3, activation="softmax", name="act2Output")(actorLstmLayer2)
         
-        actorOutputLayer1_a = tf.keras.layers.Multiply()(
-            [actorOutputLayer1, tf.constant([[-1.0, 0.0, 1.0]])])
-        actorOutputLayer2_a = tf.keras.layers.Multiply()(
-            [actorOutputLayer2, tf.constant([[-1.0, 0.0, 1.0]])])
-        a1a2DotLayer = tf.keras.layers.Dot(
-            axes=-1)([actorOutputLayer1_a, actorOutputLayer2_a])
-        a1a2SqLayer = tf.keras.layers.Multiply()([a1a2DotLayer, a1a2DotLayer])
-        a1a2SqLayer = -(tf.keras.layers.BatchNormalization()(a1a2SqLayer)+1.0)/2.0
-        
         finalAddLayer1 = tf.keras.layers.Add()(
             [tf.constant([1.0]), profitInputLayer[:,-1]])
         
@@ -103,7 +94,7 @@ class PrModel:
         finalOutputLayer2 = tf.keras.layers.Multiply(name="multiply2")(
             [finalAddLayer1, finalAddLayer2])
         finalOutputLayer2 = tf.keras.layers.Add(name="add2")(
-            [finalOutputLayer2, a1a2SqLayer])
+            [finalOutputLayer2, tf.constant([[-1.0]])])
 
         self.actorModel = tf.keras.Model(
             inputs=[seqInputLayer, actInputLayer, profitInputLayer], outputs=finalOutputLayer2)
