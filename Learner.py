@@ -45,17 +45,17 @@ class Learner:
         self.historicalStatusList=self.historicalStatusList[:-1]
 
     def status2strategy(self,oldStatus,newStatus):
-        if oldStatus == newStatus:
+        if oldStatus == newStatus: # 前后同状态==观察
             strategyI = 2
-        elif oldStatus == 0 and newStatus == 1:
+        elif oldStatus == 0 and newStatus == 1: # 观察到买多
             strategyI = 0
-        elif oldStatus == 1 and newStatus == 0:
+        elif oldStatus == 1 and newStatus == 0: # 观察到卖多
             strategyI = 1
-        elif oldStatus == 0 and newStatus == -1:
+        elif oldStatus == 0 and newStatus == -1: # 观察到买空
             strategyI = 3
-        elif oldStatus == -1 and newStatus == 0:
+        elif oldStatus == -1 and newStatus == 0: # 观察到卖空
             strategyI = 4
-        else:
+        else: # 不存在
             return False
         return strategyI
 
