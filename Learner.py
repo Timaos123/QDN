@@ -1,5 +1,5 @@
 import tensorflow as tf
-from SimEnvironment import SimEnvironment
+from SimUtil import SimEnvironment
 from sklearn.neural_network import MLPClassifier
 import random
 import time
