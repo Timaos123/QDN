@@ -14,12 +14,13 @@ from functools import reduce
 
 class PrModel:
 
-    def __init__(self, T, dim=5, decisionType=[-1, 0, 1], summary=False, reloadModel=False):
+    def __init__(self, T, dim=5, decisionType=[-1, 0, 1], summary=False, reloadModel=False,meanRiseRate=0.01):
         self.T = T
         self.dim = dim
         self.decisionType = decisionType
         self.oldF1 = 0
         self.actionNum = len(decisionType)
+        self.meanRiseRate = meanRiseRate
         self.buildCriticModel(summary=summary, reloadModel=reloadModel)
         self.buildActorModel(reloadModel=reloadModel, summary=summary)
 
@@ -74,20 +75,22 @@ class PrModel:
         criticLstmLayer = tf.keras.layers.LSTM(64, activation="tanh",name="criticLstmLayer")(inputLayer)
         criticOutputLayer = tf.keras.layers.Dense(
             2, activation="softmax", name="criticOutputLayer")(criticLstmLayer)
+        criticOutputLayer = tf.keras.layers.Dot(axes=1)([criticOutputLayer,tf.constant([[-1.0,1.0]])])
         
         actorLstmLayer1 = tf.keras.layers.LSTM(64, activation="tanh")(inputLayer)
         actorOutputLayer1 = tf.keras.layers.Dense(3, activation="softmax",name="act1Output")(actorLstmLayer1)
         
         actorLstmLayer2 = tf.keras.layers.LSTM(64, activation="tanh")(inputLayer)
-        actorOutputLayer2 = tf.keras.layers.Dense(3, activation="softmax", name="act2Output")(actorLstmLayer2)
+        actorOutputLayer2 = tf.keras.layers.Dense(
+            3, activation="softmax", name="act2Output")(actorLstmLayer2)
         
         finalAddLayer1 = tf.keras.layers.Add()(
             [tf.constant([1.0]), profitInputLayer[:,-1]])
         
         finalMultiplyLayer = tf.keras.layers.Multiply(name="multiply1"
-        )([actorOutputLayer1, actorOutputLayer2, criticOutputLayer[:,-1]])
+                                                      )([actorOutputLayer1, actorOutputLayer2, criticOutputLayer])
         finalDotLayer = tf.keras.layers.Dot(name="dot",axes=-1)(
-            [finalMultiplyLayer, tf.constant([[-1.0,0.0, 1.0]])])
+            [finalMultiplyLayer, tf.constant([[-1.0, 0.0, 1.0]])])
         finalAddLayer2 = tf.keras.layers.Add(name="add1")(
             [tf.constant([[1.0]]), finalDotLayer])
         
@@ -97,10 +100,15 @@ class PrModel:
             [finalOutputLayer2, tf.constant([[-1.0]])])
 
         self.actorModel = tf.keras.Model(
-            inputs=[seqInputLayer, actInputLayer, profitInputLayer], outputs=finalOutputLayer2)
+            inputs=[seqInputLayer, actInputLayer, profitInputLayer], outputs=finalDotLayer)
+
+        self.actorModel.layers[4] = self.criticModel.layers[1]
+        self.actorModel.layers[4].trainable = False
+        self.actorModel.layers[5] = self.criticModel.layers[2]
+        self.actorModel.layers[5].trainable = False
         
         self.actorModel.compile(optimizer=tf.keras.optimizers.RMSprop(
-            lr=0.1), loss="mse")
+            lr=0.01), loss="mse")
 
         if reloadModel == True:
             self.actorModel.load_weights("model/actorModel/RLModel")
@@ -142,11 +150,15 @@ class PrModel:
         totalRewardIndex=0
         for rowI in range(aX.shape[0]):
             for colI in range(aX.shape[1]):
-                if rowI==0 and colI ==0:
-                    totalRewardItem = aX[rowI][colI]*x[rowI][colI][seqIndex]
-                else:
+                if colI == 0:
+                    totalRewardItem = aX[rowI][colI] * \
+                        aX[rowI][colI+1]*x[rowI][colI][seqIndex]
+                elif colI == len(x[rowI])-1:
                     totalRewardItem = (totalRewardList[totalRewardIndex-1]+1)*(
                         1+aX[rowI][colI]*x[rowI][colI][seqIndex])-1
+                else:
+                    totalRewardItem = (totalRewardList[totalRewardIndex-1]+1)*(
+                        1+aX[rowI][colI]*aX[rowI][colI+1]*x[rowI][colI][seqIndex])-1
                 totalRewardList.append(totalRewardItem)
                 totalRewardIndex+=1
         totalRewardArr = np.array(totalRewardList).reshape([-1,T-1,1])
@@ -164,6 +176,8 @@ class PrModel:
                                         outputs=self.actorModel.get_layer('act1Output').output)
         self.act2Model = tf.keras.Model(inputs=self.actorModel.input,
                                         outputs=self.actorModel.get_layer('act2Output').output)
+        self.actorCritic = tf.keras.Model(inputs=self.actorModel.input,
+                                          outputs=self.actorModel.get_layer('criticOutputLayer').output)
 
     def predictActor(self,x,aArr,seqIndex=0):
         
@@ -185,8 +199,9 @@ class PrModel:
         aX = self.expandAct(aX)
         preY1 = self.act1Model.predict([x, aX, totalRewardArr])
         preY2 = self.act2Model.predict([x, aX, totalRewardArr])
+        preY3 = self.actorCritic.predict([x, aX, totalRewardArr])
         
-        return preY1,preY2
+        return preY1, preY2, preY3
     
     def predictActorResult(self, x, aArr, seqIndex=0):
 
@@ -219,7 +234,7 @@ if __name__=="__main__":
     decisionSpace=[-1,0,1]
 
     mySimEnv = SimEnvironment(dim=dim)
-    pArr = np.array([mySimEnv.giveRandomVal(i) for i in range(1, 150)])
+    pArr = np.array([mySimEnv.giveRandomVal(i) for i in range(1, 1500)])
     
     pxArr = np.array([row[xIndex] for row in pArr])
     pyArr = np.array([row[yIndex] for row in pArr])
@@ -234,24 +249,26 @@ if __name__=="__main__":
     myPrModel.fitCritic(pXArr,pYArr,epochs=50)
     preY=myPrModel.predictCritic(np.array([pXArr[0]]))
     
-    myPrModel.fitActor(pXArr, pYArr, epochs=150)
+    myPrModel.fitActor(pXArr, pYArr, epochs=50)
     
     # np.array([[0,0,0,0]])
-    preX = pXArr[:5]
-    initA = np.array([[int(random.random() > 0.5)
-                        for rowItem in range(T-1)]])
+    prePeriod=30
+    preX = pXArr[:prePeriod]
+    initA = np.array([[1,0,-1,0]])
     actList=[]
     preY1List=[]
     preY2List=[]
+    preY3List=[]
     preYList=[]
     for preXI in range(preX.shape[0]):
-        preY1, preY2 = myPrModel.predictActor(
+        preY1, preY2,preY3 = myPrModel.predictActor(
             np.array([pXArr[preXI]]), aArr=initA)
         preY = myPrModel.predictActorResult(
             np.array([pXArr[preXI]]), aArr=initA)
         
         preY1List.append(decisionSpace[np.argmax(preY1)])
         preY2List.append(decisionSpace[np.argmax(preY2)])
+        preY3List.append(preY3)
         preYList.append(preY)
         
         initA[0] = np.array(initA[0, 1:].tolist()+[decisionSpace[np.argmax(preY1)]])
@@ -259,7 +276,8 @@ if __name__=="__main__":
         
     print(preY1List)
     print(preY2List)
+    print(preY3List)
     print(np.array(preYList))
-    print(pyArr[:10])
+    print(pyArr[:prePeriod+T])
     print(123)
  
